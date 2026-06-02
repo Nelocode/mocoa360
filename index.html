@@ -38,17 +38,29 @@
     overflow: hidden;
     cursor: grab;
     background: #0a0b0e;
-    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .viewer:active { cursor: grabbing; }
 
-  .viewer canvas {
+  .viewer img {
+    position: absolute;
     display: block;
     width: 100%;
     height: 100%;
     object-fit: contain;
     image-rendering: auto;
+    pointer-events: none;
+  }
+
+  .viewer #imgA {
+    z-index: 1;
+  }
+  .viewer #imgB {
+    z-index: 2;
+    opacity: 0;
   }
 
   /* Loading */
@@ -134,7 +146,7 @@
   }
   .progress .dot.active { background: #FF002C; }
 
-  /* Tap hint (first interaction) */
+  /* Tap hint */
   .hint-overlay {
     position: absolute;
     inset: 0;
@@ -146,9 +158,7 @@
     opacity: 0;
     transition: opacity 0.5s;
   }
-  .hint-overlay.show {
-    opacity: 1;
-  }
+  .hint-overlay.show { opacity: 1; }
   .hint-overlay .arrow {
     font-size: 48px;
     color: rgba(255,255,255,0.08);
@@ -159,7 +169,6 @@
     50% { transform: translateX(10px); opacity: 0.2; }
   }
 
-  /* Disclaimers for very small screens */
   @media (max-width: 480px) {
     .info { font-size: 9px; padding: 8px 12px; }
     .info .brand { font-size: 10px; }
@@ -171,14 +180,14 @@
 
 <div class="container">
   <div class="viewer" id="viewer">
+    <img id="imgA" alt="">
+    <img id="imgB" alt="">
+
     <!-- Loading -->
     <div class="loader" id="loader">
       <div class="spinner"></div>
       <p>Loading Mocoa 360°</p>
     </div>
-
-    <!-- Canvas -->
-    <canvas id="canvas"></canvas>
 
     <!-- Progress dots -->
     <div class="progress" id="progress"></div>
@@ -205,16 +214,14 @@
   const TOTAL_FRAMES = 36;       // 10°–360°, step 10°
   const STEP = 10;               // degrees per frame
   const FRAME_NAMES = Array.from({ length: TOTAL_FRAMES }, (_, i) => {
-    const deg = (i + 1) * STEP;  // 10, 20, ..., 360
+    const deg = (i + 1) * STEP;
     return `${deg}.png`;
   });
-
-  /* Path to frames — same folder as this HTML, or change to absolute URL */
   const BASE_PATH = './frames/';
 
   // ── DOM refs ───────────────────────────────────────────────
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const imgA = document.getElementById('imgA');
+  const imgB = document.getElementById('imgB');
   const loader = document.getElementById('loader');
   const progress = document.getElementById('progress');
   const posLabel = document.getElementById('positionLabel');
@@ -223,10 +230,8 @@
 
   // ── State ──────────────────────────────────────────────────
   let images = [];               // preloaded Image objects
-  let position = 0;              // continuous position (0 = first frame, TOTAL_FRAMES = full loop)
-  let currentFrame = 0;          // integer frame index
-  let nextFrame = 0;             // adjacent frame for crossfade
-  let blend = 0;                 // 0..1 blend between currentFrame and nextFrame
+  let position = 0;              // continuous position (0..TOTAL_FRAMES)
+  let prevFrame = 0;             // last drawn integer frame (for imgA)
   let isDragging = false;
   let lastX = 0;
   let velocity = 0;
@@ -235,83 +240,51 @@
   let inertiaRaf = null;
   let hasInteracted = false;
   let loadedCount = 0;
-  let pixelPerFrame = 0;         // calculated on resize
+  let pixelPerFrame = 0;
 
   // ── Sizing ─────────────────────────────────────────────────
-  const NATIVE_W = 1024;
-  const NATIVE_H = 768;
-  let containerW, containerH, scale, offsetX, offsetY;
-
-  function calcLayout() {
-    const rect = canvas.parentElement.getBoundingClientRect();
-    containerW = rect.width;
-    containerH = rect.height;
-    canvas.width = containerW;
-    canvas.height = containerH;
-
-    const scaleX = containerW / NATIVE_W;
-    const scaleY = containerH / NATIVE_H;
-    scale = Math.min(scaleX, scaleY, 2);
-    const dispW = NATIVE_W * scale;
-    const dispH = NATIVE_H * scale;
-    offsetX = (containerW - dispW) / 2;
-    offsetY = (containerH - dispH) / 2;
-
-    // ~1 full swipe = full 360° rotation
-    pixelPerFrame = Math.max(6, containerW / TOTAL_FRAMES);
+  function calcPixelPerFrame() {
+    const w = document.getElementById('viewer').clientWidth;
+    pixelPerFrame = Math.max(6, w / TOTAL_FRAMES);
   }
 
-  // ── Draw with crossfade ────────────────────────────────────
-  function draw() {
-    ctx.fillStyle = '#08090a';
-    ctx.fillRect(0, 0, containerW, containerH);
-
-    // Compute current frame index and blend factor
+  // ── Render ─────────────────────────────────────────────────
+  function render() {
     let pos = ((position % TOTAL_FRAMES) + TOTAL_FRAMES) % TOTAL_FRAMES;
     let idx = Math.floor(pos);
     let blend = pos - idx;
 
-    currentFrame = idx % TOTAL_FRAMES;
-    nextFrame = (idx + 1) % TOTAL_FRAMES;
-    this.blend = blend;
+    let frameA = idx % TOTAL_FRAMES;
+    let frameB = (idx + 1) % TOTAL_FRAMES;
 
-    const imgA = images[currentFrame];
-    const imgB = images[nextFrame];
-
-    if (!imgA) return;
-
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-
-    if (imgB && blend > 0.01) {
-      // Two-pass: draw A then B with opacity for smooth crossfade
-      ctx.drawImage(imgA, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
-      ctx.globalAlpha = blend;
-      ctx.drawImage(imgB, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
-      ctx.globalAlpha = 1;
-    } else {
-      ctx.drawImage(imgA, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+    // Only update imgA when the integer frame changes
+    if (frameA !== prevFrame) {
+      imgA.src = BASE_PATH + FRAME_NAMES[frameA];
+      prevFrame = frameA;
     }
+
+    // Always update imgB to the next predicted frame
+    imgB.src = BASE_PATH + FRAME_NAMES[frameB];
+    imgB.style.opacity = blend;
 
     // Update UI
     const totalDeg = TOTAL_FRAMES * STEP;
     const deg = Math.round((pos / TOTAL_FRAMES) * totalDeg);
     posLabel.textContent = `${deg}°`;
 
-    // Progress dots — show nearest frame
     const dots = progress.querySelectorAll('.dot');
     dots.forEach((dot, i) => {
-      dot.classList.toggle('active', i === currentFrame);
+      dot.classList.toggle('active', i === frameA);
     });
   }
 
   // ── Position control ───────────────────────────────────────
   function setPosition(p) {
     position = p;
-    draw();
+    render();
   }
 
-  // ── Interaction (mouse + touch) ────────────────────────────
+  // ── Interaction ────────────────────────────────────────────
   function getX(e) {
     if (e.touches) return e.touches[0].clientX;
     return e.clientX;
@@ -354,12 +327,11 @@
     if (!isDragging) return;
     isDragging = false;
 
-    // Inertia — smoothly decelerate
     const now = performance.now();
     const dt = Math.min(now - lastTime, 100);
 
     if (Math.abs(velocity) > 2 && dt > 0) {
-      let v = velocity * 0.12;  // initial speed in frames/tick
+      let v = velocity * 0.12;
       const friction = 0.92;
 
       function inert() {
@@ -375,12 +347,10 @@
     }
   }
 
-  // ── Keyboard support (bonus) ───────────────────────────────
+  // ── Keyboard ───────────────────────────────────────────────
   document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      const step = e.key === 'ArrowLeft' ? -1 : 1;
-      position += step;
-      draw();
+      setPosition(position + (e.key === 'ArrowLeft' ? -1 : 1));
     }
   });
 
@@ -392,7 +362,10 @@
         loadedCount++;
         if (loadedCount === TOTAL_FRAMES) {
           loader.classList.add('hidden');
-          draw();
+          // Set initial frame
+          imgA.src = BASE_PATH + FRAME_NAMES[0];
+          prevFrame = 0;
+          render();
 
           if (!hasInteracted) {
             setTimeout(() => hintOverlay.classList.add('show'), 800);
@@ -406,23 +379,22 @@
 
   // ── Init ───────────────────────────────────────────────────
   function init() {
-    calcLayout();
-    window.addEventListener('resize', () => { calcLayout(); draw(); });
+    calcPixelPerFrame();
+    window.addEventListener('resize', () => { calcPixelPerFrame(); });
 
     // Mouse
-    canvas.addEventListener('mousedown', onPointerDown);
+    imgA.addEventListener('mousedown', onPointerDown);
     window.addEventListener('mousemove', onPointerMove);
     window.addEventListener('mouseup', onPointerUp);
 
     // Touch
-    canvas.addEventListener('touchstart', onPointerDown, { passive: true });
+    imgA.addEventListener('touchstart', onPointerDown, { passive: true });
     window.addEventListener('touchmove', onPointerMove, { passive: false });
     window.addEventListener('touchend', onPointerUp, { passive: true });
 
-    // Context menu
-    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    imgA.addEventListener('contextmenu', e => e.preventDefault());
 
-    // Build progress dots
+    // Progress dots
     for (let i = 0; i < TOTAL_FRAMES; i++) {
       const dot = document.createElement('div');
       dot.className = 'dot';
