@@ -223,14 +223,19 @@
 
   // ── State ──────────────────────────────────────────────────
   let images = [];               // preloaded Image objects
-  let currentFrame = 0;          // 0 = 10°, 17 = 180°, 35 = 360°
+  let position = 0;              // continuous position (0 = first frame, TOTAL_FRAMES = full loop)
+  let currentFrame = 0;          // integer frame index
+  let nextFrame = 0;             // adjacent frame for crossfade
+  let blend = 0;                 // 0..1 blend between currentFrame and nextFrame
   let isDragging = false;
   let lastX = 0;
   let velocity = 0;
   let lastTime = 0;
   let rafId = null;
+  let inertiaRaf = null;
   let hasInteracted = false;
   let loadedCount = 0;
+  let pixelPerFrame = 0;         // calculated on resize
 
   // ── Sizing ─────────────────────────────────────────────────
   const NATIVE_W = 1024;
@@ -251,39 +256,59 @@
     const dispH = NATIVE_H * scale;
     offsetX = (containerW - dispW) / 2;
     offsetY = (containerH - dispH) / 2;
+
+    // ~1 full swipe = full 360° rotation
+    pixelPerFrame = Math.max(6, containerW / TOTAL_FRAMES);
   }
 
-  // ── Draw ───────────────────────────────────────────────────
+  // ── Draw with crossfade ────────────────────────────────────
   function draw() {
     ctx.fillStyle = '#08090a';
     ctx.fillRect(0, 0, containerW, containerH);
 
-    const img = images[currentFrame];
-    if (!img) return;
+    // Compute current frame index and blend factor
+    let pos = ((position % TOTAL_FRAMES) + TOTAL_FRAMES) % TOTAL_FRAMES;
+    let idx = Math.floor(pos);
+    let blend = pos - idx;
+
+    currentFrame = idx % TOTAL_FRAMES;
+    nextFrame = (idx + 1) % TOTAL_FRAMES;
+    this.blend = blend;
+
+    const imgA = images[currentFrame];
+    const imgB = images[nextFrame];
+
+    if (!imgA) return;
 
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+
+    if (imgB && blend > 0.01) {
+      // Two-pass: draw A then B with opacity for smooth crossfade
+      ctx.drawImage(imgA, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+      ctx.globalAlpha = blend;
+      ctx.drawImage(imgB, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.drawImage(imgA, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+    }
 
     // Update UI
-    const deg = (currentFrame + 1) * STEP;
+    const totalDeg = TOTAL_FRAMES * STEP;
+    const deg = Math.round((pos / TOTAL_FRAMES) * totalDeg);
     posLabel.textContent = `${deg}°`;
 
-    // Progress dots
+    // Progress dots — show nearest frame
     const dots = progress.querySelectorAll('.dot');
     dots.forEach((dot, i) => {
       dot.classList.toggle('active', i === currentFrame);
     });
   }
 
-  // ── Frame navigation ───────────────────────────────────────
-  function setFrame(index) {
-    currentFrame = ((index % TOTAL_FRAMES) + TOTAL_FRAMES) % TOTAL_FRAMES;
+  // ── Position control ───────────────────────────────────────
+  function setPosition(p) {
+    position = p;
     draw();
-  }
-
-  function offsetFrames(delta) {
-    setFrame(currentFrame + delta);
   }
 
   // ── Interaction (mouse + touch) ────────────────────────────
@@ -299,6 +324,8 @@
     velocity = 0;
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
+    if (inertiaRaf) cancelAnimationFrame(inertiaRaf);
+    inertiaRaf = null;
 
     if (!hasInteracted) {
       hasInteracted = true;
@@ -314,13 +341,8 @@
     const x = getX(e);
     const dx = lastX - x;
 
-    // Map pixel drag to frame offset — sensitivity ~1 frame per 8px on mobile
-    const sensitivity = Math.max(4, containerW / 200);
-    const frameDelta = Math.round(dx / sensitivity);
-    if (frameDelta !== 0) {
-      offsetFrames(frameDelta);
-      lastX = x - (dx - frameDelta * sensitivity);
-    } else {
+    if (Math.abs(dx) > 0.5) {
+      setPosition(position + dx / pixelPerFrame);
       lastX = x;
     }
 
@@ -332,34 +354,35 @@
     if (!isDragging) return;
     isDragging = false;
 
-    // Inertia
+    // Inertia — smoothly decelerate
     const now = performance.now();
     const dt = Math.min(now - lastTime, 100);
 
-    if (Math.abs(velocity) > 1 && dt > 0) {
-      const inertiaFrames = Math.round(velocity / 25);
-      const totalFrames = Math.max(Math.min(inertiaFrames, 8), -8);
+    if (Math.abs(velocity) > 2 && dt > 0) {
+      let v = velocity * 0.12;  // initial speed in frames/tick
+      const friction = 0.92;
 
-      if (totalFrames !== 0) {
-        const start = currentFrame;
-        const end = ((start + totalFrames) % TOTAL_FRAMES + TOTAL_FRAMES) % TOTAL_FRAMES;
-        const diff = ((end - start) % TOTAL_FRAMES + TOTAL_FRAMES) % TOTAL_FRAMES;
-        const shortDiff = diff <= TOTAL_FRAMES / 2 ? diff : diff - TOTAL_FRAMES;
-
-        let remaining = shortDiff;
-        const step = remaining > 0 ? 1 : -1;
-
-        function inertiaTick() {
-          if (remaining === 0) return;
-          setFrame(currentFrame + step);
-          remaining -= step;
-          if ((step > 0 && remaining <= 0) || (step < 0 && remaining >= 0)) return;
-          requestAnimationFrame(inertiaTick);
+      function inert() {
+        v *= friction;
+        if (Math.abs(v) < 0.01) {
+          inertiaRaf = null;
+          return;
         }
-        inertiaTick();
+        setPosition(position + v);
+        inertiaRaf = requestAnimationFrame(inert);
       }
+      inert();
     }
   }
+
+  // ── Keyboard support (bonus) ───────────────────────────────
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const step = e.key === 'ArrowLeft' ? -1 : 1;
+      position += step;
+      draw();
+    }
+  });
 
   // ── Preload ────────────────────────────────────────────────
   function preloadFrames() {
@@ -371,7 +394,6 @@
           loader.classList.add('hidden');
           draw();
 
-          // Show hint after a moment if no interaction yet
           if (!hasInteracted) {
             setTimeout(() => hintOverlay.classList.add('show'), 800);
           }
