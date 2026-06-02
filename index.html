@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Mocoa 360° — Copper Giant Resources Corp.</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #08090a;
+    color: #e0e0e0;
+    font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+    overflow: hidden;
+    height: 100dvh;
+    width: 100vw;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .viewer {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    max-width: 1024px;
+    max-height: 768px;
+    overflow: hidden;
+    cursor: grab;
+    background: #0a0b0e;
+    border-radius: 0;
+  }
+
+  .viewer:active { cursor: grabbing; }
+
+  .viewer canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    image-rendering: auto;
+  }
+
+  /* Loading */
+  .loader {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #08090a;
+    z-index: 10;
+    transition: opacity 0.6s ease;
+  }
+  .loader.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .loader .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #1a1c20;
+    border-top-color: #FF002C;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .loader p {
+    margin-top: 16px;
+    font-size: 13px;
+    color: #666;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Bottom bar */
+  .info {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 12px 20px;
+    background: linear-gradient(transparent, rgba(8,9,10,0.9));
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #555;
+    letter-spacing: 0.5px;
+    z-index: 5;
+  }
+  .info .brand {
+    color: #FF002C;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .info .position {
+    color: #888;
+    font-variant-numeric: tabular-nums;
+  }
+  .info .hint {
+    color: #555;
+  }
+  .info .hint span { display: inline-block; margin-left: 6px; }
+
+  /* Progress dots */
+  .progress {
+    position: absolute;
+    bottom: 48px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 3px;
+    z-index: 5;
+  }
+  .progress .dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #333;
+    transition: background 0.2s;
+  }
+  .progress .dot.active { background: #FF002C; }
+
+  /* Tap hint (first interaction) */
+  .hint-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 8;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  .hint-overlay.show {
+    opacity: 1;
+  }
+  .hint-overlay .arrow {
+    font-size: 48px;
+    color: rgba(255,255,255,0.08);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: translateX(-10px); opacity: 0.08; }
+    50% { transform: translateX(10px); opacity: 0.2; }
+  }
+
+  /* Disclaimers for very small screens */
+  @media (max-width: 480px) {
+    .info { font-size: 9px; padding: 8px 12px; }
+    .info .brand { font-size: 10px; }
+    .progress { bottom: 40px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="viewer" id="viewer">
+    <!-- Loading -->
+    <div class="loader" id="loader">
+      <div class="spinner"></div>
+      <p>Loading Mocoa 360°</p>
+    </div>
+
+    <!-- Canvas -->
+    <canvas id="canvas"></canvas>
+
+    <!-- Progress dots -->
+    <div class="progress" id="progress"></div>
+
+    <!-- Hint overlay -->
+    <div class="hint-overlay" id="hintOverlay">
+      <div class="arrow">⟷</div>
+    </div>
+
+    <!-- Info bar -->
+    <div class="info">
+      <span class="brand">Copper Giant Resources Corp.</span>
+      <span class="position" id="positionLabel">0°</span>
+      <span class="hint">⟵ <span id="dragHint">drag to rotate</span> ⟶</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ── Configuration ──────────────────────────────────────────
+  const TOTAL_FRAMES = 36;       // 10°–360°, step 10°
+  const STEP = 10;               // degrees per frame
+  const FRAME_NAMES = Array.from({ length: TOTAL_FRAMES }, (_, i) => {
+    const deg = (i + 1) * STEP;  // 10, 20, ..., 360
+    return `${deg}.png`;
+  });
+
+  /* Path to frames — same folder as this HTML, or change to absolute URL */
+  const BASE_PATH = './frames/';
+
+  // ── DOM refs ───────────────────────────────────────────────
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const loader = document.getElementById('loader');
+  const progress = document.getElementById('progress');
+  const posLabel = document.getElementById('positionLabel');
+  const hintOverlay = document.getElementById('hintOverlay');
+  const dragHint = document.getElementById('dragHint');
+
+  // ── State ──────────────────────────────────────────────────
+  let images = [];               // preloaded Image objects
+  let currentFrame = 0;          // 0 = 10°, 17 = 180°, 35 = 360°
+  let isDragging = false;
+  let lastX = 0;
+  let velocity = 0;
+  let lastTime = 0;
+  let rafId = null;
+  let hasInteracted = false;
+  let loadedCount = 0;
+
+  // ── Sizing ─────────────────────────────────────────────────
+  const NATIVE_W = 1024;
+  const NATIVE_H = 768;
+  let containerW, containerH, scale, offsetX, offsetY;
+
+  function calcLayout() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    containerW = rect.width;
+    containerH = rect.height;
+    canvas.width = containerW;
+    canvas.height = containerH;
+
+    const scaleX = containerW / NATIVE_W;
+    const scaleY = containerH / NATIVE_H;
+    scale = Math.min(scaleX, scaleY, 2);
+    const dispW = NATIVE_W * scale;
+    const dispH = NATIVE_H * scale;
+    offsetX = (containerW - dispW) / 2;
+    offsetY = (containerH - dispH) / 2;
+  }
+
+  // ── Draw ───────────────────────────────────────────────────
+  function draw() {
+    ctx.fillStyle = '#08090a';
+    ctx.fillRect(0, 0, containerW, containerH);
+
+    const img = images[currentFrame];
+    if (!img) return;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, offsetX, offsetY, NATIVE_W * scale, NATIVE_H * scale);
+
+    // Update UI
+    const deg = (currentFrame + 1) * STEP;
+    posLabel.textContent = `${deg}°`;
+
+    // Progress dots
+    const dots = progress.querySelectorAll('.dot');
+    dots.forEach((dot, i) => {
+      dot.classList.toggle('active', i === currentFrame);
+    });
+  }
+
+  // ── Frame navigation ───────────────────────────────────────
+  function setFrame(index) {
+    currentFrame = ((index % TOTAL_FRAMES) + TOTAL_FRAMES) % TOTAL_FRAMES;
+    draw();
+  }
+
+  function offsetFrames(delta) {
+    setFrame(currentFrame + delta);
+  }
+
+  // ── Interaction (mouse + touch) ────────────────────────────
+  function getX(e) {
+    if (e.touches) return e.touches[0].clientX;
+    return e.clientX;
+  }
+
+  function onPointerDown(e) {
+    isDragging = true;
+    lastX = getX(e);
+    lastTime = performance.now();
+    velocity = 0;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+
+    if (!hasInteracted) {
+      hasInteracted = true;
+      hintOverlay.classList.remove('show');
+      dragHint.textContent = 'drag to rotate';
+    }
+  }
+
+  function onPointerMove(e) {
+    if (!isDragging) return;
+    e.preventDefault();
+
+    const x = getX(e);
+    const dx = lastX - x;
+
+    // Map pixel drag to frame offset — sensitivity ~1 frame per 8px on mobile
+    const sensitivity = Math.max(4, containerW / 200);
+    const frameDelta = Math.round(dx / sensitivity);
+    if (frameDelta !== 0) {
+      offsetFrames(frameDelta);
+      lastX = x - (dx - frameDelta * sensitivity);
+    } else {
+      lastX = x;
+    }
+
+    velocity = dx;
+    lastTime = performance.now();
+  }
+
+  function onPointerUp() {
+    if (!isDragging) return;
+    isDragging = false;
+
+    // Inertia
+    const now = performance.now();
+    const dt = Math.min(now - lastTime, 100);
+
+    if (Math.abs(velocity) > 1 && dt > 0) {
+      const inertiaFrames = Math.round(velocity / 25);
+      const totalFrames = Math.max(Math.min(inertiaFrames, 8), -8);
+
+      if (totalFrames !== 0) {
+        const start = currentFrame;
+        const end = ((start + totalFrames) % TOTAL_FRAMES + TOTAL_FRAMES) % TOTAL_FRAMES;
+        const diff = ((end - start) % TOTAL_FRAMES + TOTAL_FRAMES) % TOTAL_FRAMES;
+        const shortDiff = diff <= TOTAL_FRAMES / 2 ? diff : diff - TOTAL_FRAMES;
+
+        let remaining = shortDiff;
+        const step = remaining > 0 ? 1 : -1;
+
+        function inertiaTick() {
+          if (remaining === 0) return;
+          setFrame(currentFrame + step);
+          remaining -= step;
+          if ((step > 0 && remaining <= 0) || (step < 0 && remaining >= 0)) return;
+          requestAnimationFrame(inertiaTick);
+        }
+        inertiaTick();
+      }
+    }
+  }
+
+  // ── Preload ────────────────────────────────────────────────
+  function preloadFrames() {
+    FRAME_NAMES.forEach((name, idx) => {
+      const img = new Image();
+      img.onload = () => {
+        loadedCount++;
+        if (loadedCount === TOTAL_FRAMES) {
+          loader.classList.add('hidden');
+          draw();
+
+          // Show hint after a moment if no interaction yet
+          if (!hasInteracted) {
+            setTimeout(() => hintOverlay.classList.add('show'), 800);
+          }
+        }
+      };
+      img.src = BASE_PATH + name;
+      images[idx] = img;
+    });
+  }
+
+  // ── Init ───────────────────────────────────────────────────
+  function init() {
+    calcLayout();
+    window.addEventListener('resize', () => { calcLayout(); draw(); });
+
+    // Mouse
+    canvas.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+
+    // Touch
+    canvas.addEventListener('touchstart', onPointerDown, { passive: true });
+    window.addEventListener('touchmove', onPointerMove, { passive: false });
+    window.addEventListener('touchend', onPointerUp, { passive: true });
+
+    // Context menu
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // Build progress dots
+    for (let i = 0; i < TOTAL_FRAMES; i++) {
+      const dot = document.createElement('div');
+      dot.className = 'dot';
+      progress.appendChild(dot);
+    }
+
+    preloadFrames();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
