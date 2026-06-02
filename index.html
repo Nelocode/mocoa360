@@ -288,21 +288,16 @@
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 4;
   const ZOOM_STEP = 0.25;
-  let panX = 0;
-  let panY = 0;
-  let panning = false;
-  let panLX = 0;
-  let panLY = 0;
 
   function calcPPF() {
     ppf = Math.max(6, viewer.clientWidth / TOTAL);
   }
 
-  // ── Apply zoom + pan ────────────────────────────────────────
-  function applyTransform() {
-    let tx = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';
-    imgA.style.transform = tx;
-    imgB.style.transform = tx;
+  // ── Apply zoom ──────────────────────────────────────────────
+  function applyZoom() {
+    let sc = 'scale(' + zoom + ')';
+    imgA.style.transform = sc;
+    imgB.style.transform = sc;
     zoomLabel.textContent = Math.round(zoom * 100) + '%';
   }
 
@@ -337,37 +332,9 @@
   }
 
   // ── Zoom ────────────────────────────────────────────────────
-  function setZoom(z, cx, cy) {
-    let old = zoom;
+  function setZoom(z) {
     zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
-
-    // Zoom toward cursor (pinch center)
-    if (cx !== undefined) {
-      let rect = viewer.getBoundingClientRect();
-      let vw = viewer.clientWidth;
-      let vh = viewer.clientHeight;
-
-      // Where the cursor was in image-space before zoom
-      let ratio = zoom / old;
-      panX = cx - rect.left - vw / 2 - ratio * (cx - rect.left - vw / 2 - panX);
-      panY = cy - rect.top - vh / 2 - ratio * (cy - rect.top - vh / 2 - panY);
-
-      // Clamp pan to keep image in view
-      clampPan();
-    }
-
-    applyTransform();
-  }
-
-  function clampPan() {
-    let vw = viewer.clientWidth;
-    let vh = viewer.clientHeight;
-    let iw = vw * zoom;
-    let ih = vh * zoom;
-    let maxX = Math.max(0, (iw - vw) / 2);
-    let maxY = Math.max(0, (ih - vh) / 2);
-    panX = Math.min(maxX, Math.max(-maxX, panX));
-    panY = Math.min(maxY, Math.max(-maxY, panY));
+    applyZoom();
   }
 
   zoomInBtn.addEventListener('click', function() { setZoom(zoom + ZOOM_STEP); });
@@ -377,12 +344,13 @@
   viewer.addEventListener('wheel', function(e) {
     e.preventDefault();
     let delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-    setZoom(zoom + delta, e.clientX, e.clientY);
+    setZoom(zoom + delta);
   }, { passive: false });
 
-  // ── Pointer events ──────────────────────────────────────────
-  function getX(e) { return e.touches ? e.touches[0].clientX : e.clientX; }
-  function getY(e) { return e.touches ? e.touches[0].clientY : e.clientY; }
+  // ── Pinch-to-zoom ───────────────────────────────────────────
+  let pinchDist = 0;
+  let pinchZoom = 1;
+
   function getDist(e) {
     if (e.touches && e.touches.length === 2) {
       let dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -392,31 +360,15 @@
     return 0;
   }
 
-  let pinchDist = 0;
-  let pinchZoom = 1;
-  let pinchCX = 0;
-  let pinchCY = 0;
+  function getX(e) { return e.touches ? e.touches[0].clientX : e.clientX; }
 
+  // ── Pointer events (always rotate, never pan) ───────────────
   function down(e) {
     if (e.touches && e.touches.length === 2) {
-      // Pinch start
       pinchDist = getDist(e);
       pinchZoom = zoom;
-      pinchCX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      pinchCY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      panning = false;
-      dragging = false;
       return;
     }
-
-    if (zoom > 1) {
-      panning = true;
-      panLX = getX(e);
-      panLY = getY(e);
-      viewer.classList.add('grabbing');
-      return;
-    }
-
     dragging = true;
     viewer.classList.add('grabbing');
     lx = getX(e);
@@ -436,22 +388,8 @@
       e.preventDefault();
       let d = getDist(e);
       if (pinchDist > 0) {
-        let cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        let cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        setZoom(pinchZoom * (d / pinchDist), cx, cy);
+        setZoom(pinchZoom * (d / pinchDist));
       }
-      return;
-    }
-
-    if (panning) {
-      let x = getX(e);
-      let y = getY(e);
-      panX += (x - panLX);
-      panY += (y - panLY);
-      panLX = x;
-      panLY = y;
-      clampPan();
-      applyTransform();
       return;
     }
 
@@ -473,12 +411,6 @@
   function up(e) {
     if (e.touches && e.touches.length < 2) {
       pinchDist = 0;
-    }
-
-    if (panning) {
-      panning = false;
-      viewer.classList.remove('grabbing');
-      return;
     }
 
     if (!dragging) return;
@@ -540,8 +472,7 @@
     calcPPF();
     window.addEventListener('resize', function() {
       calcPPF();
-      clampPan();
-      applyTransform();
+      applyZoom();
     });
 
     for (let i = 0; i < TOTAL; i++) {
@@ -550,7 +481,7 @@
       progress.appendChild(dot);
     }
 
-    applyTransform();
+    applyZoom();
     preload();
   }
 
