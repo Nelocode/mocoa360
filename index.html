@@ -7,14 +7,14 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  body {
+  html, body {
     background: #08090a;
     color: #e0e0e0;
     font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
     overflow: hidden;
+    height: 100vh;
     height: 100dvh;
     width: 100vw;
-    touch-action: none;
     user-select: none;
     -webkit-user-select: none;
   }
@@ -24,7 +24,6 @@
     width: 100%;
     height: 100%;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
   }
@@ -38,30 +37,26 @@
     overflow: hidden;
     cursor: grab;
     background: #0a0b0e;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    touch-action: none;
   }
 
-  .viewer:active { cursor: grabbing; }
+  .viewer.grabbing { cursor: grabbing; }
 
   .viewer img {
     position: absolute;
     display: block;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     object-fit: contain;
     image-rendering: auto;
     pointer-events: none;
+    -webkit-user-drag: none;
   }
 
-  .viewer #imgA {
-    z-index: 1;
-  }
-  .viewer #imgB {
-    z-index: 2;
-    opacity: 0;
-  }
+  .viewer #imgA { z-index: 1; }
+  .viewer #imgB { z-index: 2; }
 
   /* Loading */
   .loader {
@@ -75,13 +70,9 @@
     z-index: 10;
     transition: opacity 0.6s ease;
   }
-  .loader.hidden {
-    opacity: 0;
-    pointer-events: none;
-  }
+  .loader.hidden { opacity: 0; pointer-events: none; }
   .loader .spinner {
-    width: 40px;
-    height: 40px;
+    width: 40px; height: 40px;
     border: 3px solid #1a1c20;
     border-top-color: #FF002C;
     border-radius: 50%;
@@ -99,9 +90,7 @@
   /* Bottom bar */
   .info {
     position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    bottom: 0; left: 0; right: 0;
     padding: 12px 20px;
     background: linear-gradient(transparent, rgba(8,9,10,0.9));
     display: flex;
@@ -112,20 +101,9 @@
     letter-spacing: 0.5px;
     z-index: 5;
   }
-  .info .brand {
-    color: #FF002C;
-    font-weight: 600;
-    font-size: 12px;
-    text-transform: uppercase;
-  }
-  .info .position {
-    color: #888;
-    font-variant-numeric: tabular-nums;
-  }
-  .info .hint {
-    color: #555;
-  }
-  .info .hint span { display: inline-block; margin-left: 6px; }
+  .info .brand { color: #FF002C; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .info .position { color: #888; font-variant-numeric: tabular-nums; }
+  .info .hint { color: #555; }
 
   /* Progress dots */
   .progress {
@@ -138,15 +116,14 @@
     z-index: 5;
   }
   .progress .dot {
-    width: 4px;
-    height: 4px;
+    width: 4px; height: 4px;
     border-radius: 50%;
     background: #333;
     transition: background 0.2s;
   }
   .progress .dot.active { background: #FF002C; }
 
-  /* Tap hint */
+  /* Hint */
   .hint-overlay {
     position: absolute;
     inset: 0;
@@ -180,24 +157,20 @@
 
 <div class="container">
   <div class="viewer" id="viewer">
-    <img id="imgA" alt="">
-    <img id="imgB" alt="">
+    <img id="imgA" src="" alt="Mocoa 360° view">
+    <img id="imgB" src="" alt="">
 
-    <!-- Loading -->
     <div class="loader" id="loader">
       <div class="spinner"></div>
       <p>Loading Mocoa 360°</p>
     </div>
 
-    <!-- Progress dots -->
     <div class="progress" id="progress"></div>
 
-    <!-- Hint overlay -->
     <div class="hint-overlay" id="hintOverlay">
       <div class="arrow">⟷</div>
     </div>
 
-    <!-- Info bar -->
     <div class="info">
       <span class="brand">Copper Giant Resources Corp.</span>
       <span class="position" id="positionLabel">0°</span>
@@ -210,16 +183,14 @@
 (function() {
   'use strict';
 
-  // ── Configuration ──────────────────────────────────────────
-  const TOTAL_FRAMES = 36;       // 10°–360°, step 10°
-  const STEP = 10;               // degrees per frame
-  const FRAME_NAMES = Array.from({ length: TOTAL_FRAMES }, (_, i) => {
-    const deg = (i + 1) * STEP;
-    return `${deg}.png`;
-  });
-  const BASE_PATH = './frames/';
+  // ── Config ──────────────────────────────────────────────────
+  const TOTAL = 36;
+  const STEP = 10;
+  const FRAMES = Array.from({ length: TOTAL }, (_, i) => `${(i + 1) * STEP}.png`);
+  const BASE = './frames/';
 
-  // ── DOM refs ───────────────────────────────────────────────
+  // ── DOM ─────────────────────────────────────────────────────
+  const viewer = document.getElementById('viewer');
   const imgA = document.getElementById('imgA');
   const imgB = document.getElementById('imgB');
   const loader = document.getElementById('loader');
@@ -228,180 +199,157 @@
   const hintOverlay = document.getElementById('hintOverlay');
   const dragHint = document.getElementById('dragHint');
 
-  // ── State ──────────────────────────────────────────────────
-  let images = [];               // preloaded Image objects
-  let position = 0;              // continuous position (0..TOTAL_FRAMES)
-  let prevFrame = 0;             // last drawn integer frame (for imgA)
-  let isDragging = false;
-  let lastX = 0;
-  let velocity = 0;
-  let lastTime = 0;
-  let rafId = null;
-  let inertiaRaf = null;
-  let hasInteracted = false;
-  let loadedCount = 0;
-  let pixelPerFrame = 0;
+  // ── State ───────────────────────────────────────────────────
+  let pos = 0;
+  let prev = -1;
+  let dragging = false;
+  let lx = 0;
+  let vel = 0;
+  let lt = 0;
+  let rid = null;
+  let iid = null;
+  let touched = false;
+  let loaded = 0;
+  let ppf = 0;
 
-  // ── Sizing ─────────────────────────────────────────────────
-  function calcPixelPerFrame() {
-    const w = document.getElementById('viewer').clientWidth;
-    pixelPerFrame = Math.max(6, w / TOTAL_FRAMES);
+  function calcPPF() {
+    ppf = Math.max(6, viewer.clientWidth / TOTAL);
   }
 
-  // ── Render ─────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────
   function render() {
-    let pos = ((position % TOTAL_FRAMES) + TOTAL_FRAMES) % TOTAL_FRAMES;
-    let idx = Math.floor(pos);
-    let blend = pos - idx;
+    let p = ((pos % TOTAL) + TOTAL) % TOTAL;
+    let idx = Math.floor(p);
+    let blend = p - idx;
 
-    let frameA = idx % TOTAL_FRAMES;
-    let frameB = (idx + 1) % TOTAL_FRAMES;
+    let a = idx % TOTAL;
+    let b = (idx + 1) % TOTAL;
 
-    // Only update imgA when the integer frame changes
-    if (frameA !== prevFrame) {
-      imgA.src = BASE_PATH + FRAME_NAMES[frameA];
-      prevFrame = frameA;
+    if (a !== prev) {
+      imgA.src = BASE + FRAMES[a];
+      prev = a;
     }
-
-    // Always update imgB to the next predicted frame
-    imgB.src = BASE_PATH + FRAME_NAMES[frameB];
+    imgB.src = BASE + FRAMES[b];
     imgB.style.opacity = blend;
 
-    // Update UI
-    const totalDeg = TOTAL_FRAMES * STEP;
-    const deg = Math.round((pos / TOTAL_FRAMES) * totalDeg);
-    posLabel.textContent = `${deg}°`;
+    let deg = Math.round((p / TOTAL) * (TOTAL * STEP));
+    posLabel.textContent = deg + '°';
 
-    const dots = progress.querySelectorAll('.dot');
-    dots.forEach((dot, i) => {
-      dot.classList.toggle('active', i === frameA);
-    });
+    let dots = progress.children;
+    for (let i = 0; i < dots.length; i++) {
+      dots[i].classList.toggle('active', i === a);
+    }
   }
 
-  // ── Position control ───────────────────────────────────────
-  function setPosition(p) {
-    position = p;
+  function setPos(v) {
+    pos = v;
     render();
   }
 
-  // ── Interaction ────────────────────────────────────────────
+  // ── Pointer events on viewer ────────────────────────────────
   function getX(e) {
-    if (e.touches) return e.touches[0].clientX;
-    return e.clientX;
+    return e.touches ? e.touches[0].clientX : e.clientX;
   }
 
-  function onPointerDown(e) {
-    isDragging = true;
-    lastX = getX(e);
-    lastTime = performance.now();
-    velocity = 0;
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
-    if (inertiaRaf) cancelAnimationFrame(inertiaRaf);
-    inertiaRaf = null;
+  function down(e) {
+    dragging = true;
+    viewer.classList.add('grabbing');
+    lx = getX(e);
+    lt = performance.now();
+    vel = 0;
+    if (rid) { cancelAnimationFrame(rid); rid = null; }
+    if (iid) { cancelAnimationFrame(iid); iid = null; }
 
-    if (!hasInteracted) {
-      hasInteracted = true;
+    if (!touched) {
+      touched = true;
       hintOverlay.classList.remove('show');
       dragHint.textContent = 'drag to rotate';
     }
   }
 
-  function onPointerMove(e) {
-    if (!isDragging) return;
+  function move(e) {
+    if (!dragging) return;
     e.preventDefault();
 
-    const x = getX(e);
-    const dx = lastX - x;
+    let x = getX(e);
+    let dx = lx - x;
 
     if (Math.abs(dx) > 0.5) {
-      setPosition(position + dx / pixelPerFrame);
-      lastX = x;
+      setPos(pos + dx / ppf);
+      lx = x;
     }
 
-    velocity = dx;
-    lastTime = performance.now();
+    vel = dx;
+    lt = performance.now();
   }
 
-  function onPointerUp() {
-    if (!isDragging) return;
-    isDragging = false;
+  function up(e) {
+    if (!dragging) return;
+    dragging = false;
+    viewer.classList.remove('grabbing');
 
-    const now = performance.now();
-    const dt = Math.min(now - lastTime, 100);
+    let now = performance.now();
+    let dt = Math.min(now - lt, 100);
 
-    if (Math.abs(velocity) > 2 && dt > 0) {
-      let v = velocity * 0.12;
-      const friction = 0.92;
-
+    if (Math.abs(vel) > 2 && dt > 0) {
+      let v = vel * 0.12;
       function inert() {
-        v *= friction;
-        if (Math.abs(v) < 0.01) {
-          inertiaRaf = null;
-          return;
-        }
-        setPosition(position + v);
-        inertiaRaf = requestAnimationFrame(inert);
+        v *= 0.92;
+        if (Math.abs(v) < 0.01) { iid = null; return; }
+        setPos(pos + v);
+        iid = requestAnimationFrame(inert);
       }
       inert();
     }
   }
 
-  // ── Keyboard ───────────────────────────────────────────────
-  document.addEventListener('keydown', (e) => {
+  viewer.addEventListener('mousedown', down);
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+
+  viewer.addEventListener('touchstart', down, { passive: true });
+  window.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('touchend', up, { passive: true });
+
+  viewer.addEventListener('contextmenu', e => e.preventDefault());
+
+  // ── Keyboard ────────────────────────────────────────────────
+  document.addEventListener('keydown', e => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      setPosition(position + (e.key === 'ArrowLeft' ? -1 : 1));
+      setPos(pos + (e.key === 'ArrowLeft' ? -1 : 1));
     }
   });
 
-  // ── Preload ────────────────────────────────────────────────
-  function preloadFrames() {
-    FRAME_NAMES.forEach((name, idx) => {
-      const img = new Image();
+  // ── Preload ─────────────────────────────────────────────────
+  function preload() {
+    FRAMES.forEach((name, i) => {
+      let img = new Image();
       img.onload = () => {
-        loadedCount++;
-        if (loadedCount === TOTAL_FRAMES) {
+        loaded++;
+        if (loaded === TOTAL) {
           loader.classList.add('hidden');
-          // Set initial frame
-          imgA.src = BASE_PATH + FRAME_NAMES[0];
-          prevFrame = 0;
+          imgA.src = BASE + FRAMES[0];
+          prev = 0;
           render();
-
-          if (!hasInteracted) {
-            setTimeout(() => hintOverlay.classList.add('show'), 800);
-          }
+          if (!touched) setTimeout(() => hintOverlay.classList.add('show'), 800);
         }
       };
-      img.src = BASE_PATH + name;
-      images[idx] = img;
+      img.src = BASE + name;
     });
   }
 
-  // ── Init ───────────────────────────────────────────────────
+  // ── Init ────────────────────────────────────────────────────
   function init() {
-    calcPixelPerFrame();
-    window.addEventListener('resize', () => { calcPixelPerFrame(); });
+    calcPPF();
+    window.addEventListener('resize', calcPPF);
 
-    // Mouse
-    imgA.addEventListener('mousedown', onPointerDown);
-    window.addEventListener('mousemove', onPointerMove);
-    window.addEventListener('mouseup', onPointerUp);
-
-    // Touch
-    imgA.addEventListener('touchstart', onPointerDown, { passive: true });
-    window.addEventListener('touchmove', onPointerMove, { passive: false });
-    window.addEventListener('touchend', onPointerUp, { passive: true });
-
-    imgA.addEventListener('contextmenu', e => e.preventDefault());
-
-    // Progress dots
-    for (let i = 0; i < TOTAL_FRAMES; i++) {
-      const dot = document.createElement('div');
+    for (let i = 0; i < TOTAL; i++) {
+      let dot = document.createElement('div');
       dot.className = 'dot';
       progress.appendChild(dot);
     }
 
-    preloadFrames();
+    preload();
   }
 
   if (document.readyState === 'loading') {
